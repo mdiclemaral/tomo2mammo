@@ -114,7 +114,11 @@ def process_dicom_patients(dicom_datasets, output_dir="tomo_to_mammo_output"):
                 # Resize image if it doesn't match the reference shape
                 if image.shape != reference_shape:
                     image = resize(image, reference_shape, anti_aliasing=True, preserve_range=True)
-                    image = image.astype(np.uint16)  # Convert back to uint16 if needed
+                    # image = image.astype(np.uint16)  # Convert back to uint16 if needed
+                    
+                    image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255  # Normalize
+                    image = 255 - image            
+                    image = image.astype(np.uint8)
                 
                 images_stack.append(image)
             else:
@@ -146,22 +150,26 @@ def save_dicom_as_png(dicom_datasets: Dict[str, pydicom.dataset.FileDataset],out
         output_folder (str): The folder to save PNG images.
     """
     os.makedirs(output_folder, exist_ok=True)
-    for name, img_dcm in dicom_datasets.items():
+    for name, img_dcm_list in dicom_datasets.items():
         print(f"Processing {name}")
+        i = 0
+        for img_dcm in img_dcm_list:
+            if hasattr(img_dcm, 'pixel_array'):
+                image = img_dcm.pixel_array
+                image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255  # Normalize
+                image = 255 - image            
+                image = image.astype(np.uint8)
 
-        if hasattr(img_dcm, 'pixel_array'):
-            image = img_dcm.pixel_array
-            image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255  # Normalize
-            image = image.astype(np.uint8)
-            
-            output_path = os.path.join(output_folder, f"{name}.png")
-            plt.imsave(output_path, image, cmap='gray')
-            print(f"Saved {output_path}")
+                
+                output_path = os.path.join(output_folder, f"{name}-{i}.png")
+                plt.imsave(output_path, image, cmap='gray')
+                print(f"Saved {output_path}")
+                i += 1
 
 # Example usage
 root_folder = r"tomosynth\tomo_sm"
 dicom_datasets = read_dicom_files(root_folder)
-process_dicom_patients(dicom_datasets, "tomo_to_mammo_output")
-# save_dicom_as_png(dicom_datasets, "sample_pngs")
+# process_dicom_patients(dicom_datasets, "tomo_to_mammo_output")
+save_dicom_as_png(dicom_datasets, "sample_pngs")
 
 print(f"Found {len(dicom_datasets)} DICOM files.")
