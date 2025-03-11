@@ -1,14 +1,10 @@
 import os
 import pydicom
-import zipfile
-import tempfile
 from typing import List, Dict
 import numpy as np
 from matplotlib import pyplot as plt
 import numpy as np
-import SimpleITK as sitk
 import matplotlib.pyplot as plt
-from skimage.transform import resize
 
 def find_dicom_files(root_folder: str) -> List[str]:
     """
@@ -34,7 +30,7 @@ def find_dicom_files(root_folder: str) -> List[str]:
     print(f"Found {len(dicom_files)} DICOM files.")
     return dicom_files
 
-def read_dicom_files(root_folder: str):
+def read_dicom_files(root_folder: str) -> Dict[str, List[pydicom.dataset.FileDataset]]:
     """
     Reads all DICOM files from the specified folder structure and returns them as pydicom datasets.
     
@@ -60,26 +56,29 @@ def read_dicom_files(root_folder: str):
 
         except Exception as e:
             print(f"Error reading {dicom_file}: {e}")
-
     return dataset
-def max_intensity_projection(images):
-    """Computes the Maximum Intensity Projection (MIP) across all slices."""
-    return np.max(images, axis=0)
 
-def avg_intensity_projection(images):
-    """Computes the Average Intensity Projection (AIP) across all slices."""
-    return np.mean(images, axis=0)
-
-def sum_intensity_projection(images):
-    """Computes the Sum Intensity Projection (SIP) across all slices."""
-    return np.sum(images, axis=0)
-
-def save_image(image, filename):
-    """Saves the processed image as a PNG file.""" 
+def save_image(image:np.array, filename:str) -> None:
+    """Saves the processed image as a PNG file.
+    Args:
+        image (np.array): The image to save.
+        filename (str): The filename to save the image as.
+    
+    Returns:
+        None
+    """ 
     plt.imsave(filename, image, cmap='gray')
 
-def normalize_image(image):
-    """Normalizes image to range [0, 255] and converts to uint8"""
+def normalize_image(image: np.array) -> np.array:
+    """Normalizes image to range [0, 255] and converts to uint8
+
+    Args:
+        image (np.array): The image to normalize.
+
+    Returns:
+        np.array: The normalized image
+    
+    """
     image = image.astype(np.float32)
     image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255
     image = 255 - image  # Invert image  
@@ -99,89 +98,70 @@ def get_numpy_array(axial_slices: List[pydicom.dataset.FileDataset]) -> np.array
         arr[..., i] = normalize_image(s.pixel_array.astype(np.float32))
     return arr
 
-def mip_old(patient_dcm):
-    """Computes the Maximum Intensity Projection (MIP) using old method"""
+def max_intensity_projection(patient_dcm: List[pydicom.dataset.FileDataset]) -> np.array:
+    """Computes the Maximum Intensity Projection (MIP) 
+
+    Args:
+        patient_dcm (List[pydicom.dataset.FileDataset]): List of DICOM slices for a patient.
+
+    Returns:
+        np.array: The MIP image.
+    
+    """
 
     arr_3d = get_numpy_array(patient_dcm)  # Convert to 3D array (H, W, num_slices)
-    mip_old = np.max(arr_3d, axis=-1)  # Compute MIP across the last axis
+    mip = np.max(arr_3d, axis=-1)  # Compute MIP across the last axis
 
 
-    return mip_old
+    return mip
 
-def process_dicom_patients(dicom_datasets, output_dir="tomo_to_mammo_output"):
-    """Processes DICOM datasets for each patient, computes intensity projections, and saves images."""
+def avg_intensity_projection(patient_dcm: List[pydicom.dataset.FileDataset]) -> np.array:
+    """Computes the Average Intensity Projection (AIP) 
+
+    Args:
+        patient_dcm (List[pydicom.dataset.FileDataset]): List of DICOM slices for a patient.
+
+    Returns:
+        np.array: The AIP image.
+    """
+
+    arr_3d = get_numpy_array(patient_dcm)  # Convert to 3D array (H, W, num_slices)
+    aip = np.mean(arr_3d, axis=-1)  # Compute AIP across the last axis
+
+    return aip
+
+def process_dicom_patients(dicom_datasets: Dict[str, List[pydicom.dataset.FileDataset]]
+                           , output_dir:str ="tomo_to_mammo_output") -> None:
+    """Processes DICOM datasets for each patient, computes intensity projections, and saves images.
+    
+    Args:
+        dicom_datasets (Dict[str, List[pydicom.dataset.FileDataset]]): A dictionary of DICOM datasets for each patient.
+        output_dir (str): The output directory to save the images.
+
+    Returns:
+        None
+    """
     os.makedirs(output_dir, exist_ok=True)
 
     for patient_name, patient_dcm in dicom_datasets.items():
+
         if len(patient_dcm) == 1:
-            save_dicom_as_png({patient_name: patient_dcm}, output_dir)
+            normalized_org_img = normalize_image(patient_dcm[0].pixel_array)
+            save_image(normalized_org_img, os.path.join(output_dir, f"{patient_name}.png"))
+            print(f"Saved original {patient_name}: Single image saved.")
             continue    
 
-        reference_shape = None
-        images_stack = []
-        for img_dcm in patient_dcm:
-            if hasattr(img_dcm, 'pixel_array'):
-                image = img_dcm.pixel_array.astype(np.float32)
-                
-                if reference_shape is None:
-                    reference_shape = image.shape  # Set reference shape to the first image shape
-                # Resize image if it doesn't match the reference shape
-                if image.shape != reference_shape:
-                    image = resize(image, reference_shape, anti_aliasing=True, preserve_range=True)
-                
-                image = normalize_image(image)  # Normalize all images
-
-                images_stack.append(image)
-            else:
-                print(f"Skipping: No pixel array found.")
-
+        mip = max_intensity_projection(patient_dcm)
+        aip = avg_intensity_projection(patient_dcm)
+        # Save images
+        save_image(mip, os.path.join(output_dir, f"{patient_name}_MIP.png"))
+        save_image(aip, os.path.join(output_dir, f"{patient_name}_AIP.png"))
         
-        if images_stack:
-            images_stack = np.array(images_stack)
-        
-            mip = max_intensity_projection(images_stack)
-            aip = avg_intensity_projection(images_stack)
-            mip_old_r = mip_old(patient_dcm)
-
-            # Save images
-            save_image(mip_old_r, os.path.join(output_dir, f"{patient_name}_MIP_old.png"))
-            save_image(mip, os.path.join(output_dir, f"{patient_name}_MIP.png"))
-            save_image(aip, os.path.join(output_dir, f"{patient_name}_AIP.png"))
-            
-            print(f"Processed {patient_name}: MIP, AIP, SIP computed and saved.")
-        else:
-            print(f"Skipping {patient_name}: No valid images found.")
+        print(f"Processed {patient_name}: MIP, AIP, SIP computed and saved.")
 
 
-
-def save_dicom_as_png(dicom_datasets: Dict[str, pydicom.dataset.FileDataset],output_folder: str):
-    """
-    Saves DICOM images as PNG format.
-    
-    Args:
-        dicom_datasets (List[pydicom.dataset.FileDataset]): List of DICOM datasets.
-        output_folder (str): The folder to save PNG images.
-    """
-    os.makedirs(output_folder, exist_ok=True)
-    for name, img_dcm_list in dicom_datasets.items():
-        i = 0
-        for img_dcm in img_dcm_list:
-            if hasattr(img_dcm, 'pixel_array'):
-                image = img_dcm.pixel_array
-                image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255  # Normalize
-                image = 255 - image            
-                image = image.astype(np.uint8)
-
-                
-                output_path = os.path.join(output_folder, f"{name}-{i}.png")
-                plt.imsave(output_path, image, cmap='gray')
-                print(f"Saved {output_path}")
-                i += 1
 
 # Example usage
-root_folder = r"tomosynth\tomo_sm"
+root_folder = r"tomosynth\tomo"
 dicom_datasets = read_dicom_files(root_folder)
-process_dicom_patients(dicom_datasets, "tomo_to_mammo_output")
-# save_dicom_as_png(dicom_datasets, "sample_pngs")
-
-print(f"Found {len(dicom_datasets)} DICOM files.")
+process_dicom_patients(dicom_datasets, "all_tomo_to_mammo_output")
