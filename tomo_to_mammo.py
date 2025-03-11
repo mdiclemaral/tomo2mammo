@@ -10,13 +10,6 @@ import SimpleITK as sitk
 import matplotlib.pyplot as plt
 from skimage.transform import resize
 
-def extract_zip(zip_path: str, extract_to: str):
-    """
-    Extracts a ZIP file to a temporary directory.
-    """
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        zip_ref.extractall(extract_to)
-
 def find_dicom_files(root_folder: str) -> List[str]:
     """
     Recursively finds all DICOM (.dcm) files in the specified folder structure,
@@ -29,7 +22,7 @@ def find_dicom_files(root_folder: str) -> List[str]:
         List[str]: A list of paths to DICOM files.
     """
     dicom_files = []
-    temp_dirs = []  # Track temporary extraction directories
+
     
     for dirpath, _, filenames in os.walk(root_folder):
         for filename in filenames:
@@ -37,16 +30,7 @@ def find_dicom_files(root_folder: str) -> List[str]:
             
             if filename.lower().endswith(".dcm"):
                 dicom_files.append(file_path)
-            elif filename.lower().endswith(".zip"):
-                # Create a temporary directory to extract ZIP contents
-                temp_dir = tempfile.mkdtemp()
-                temp_dirs.append(temp_dir)
-                
-                try:
-                    extract_zip(file_path, temp_dir)
-                    dicom_files.extend(find_dicom_files(temp_dir))
-                except Exception as e:
-                    print(f"Error extracting {file_path}: {e}")
+
     print(f"Found {len(dicom_files)} DICOM files.")
     return dicom_files
 
@@ -67,10 +51,12 @@ def read_dicom_files(root_folder: str):
     for i, dicom_file in enumerate(dicom_files):
         try:
             img = pydicom.dcmread(dicom_file)
-            patient_id =dicom_file.split("\\")[3]
-            if patient_id not in dataset:
-                dataset[patient_id] = []
-            dataset[patient_id].append(img)
+            split_file_name = dicom_file.split("\\")
+            patient_id = split_file_name[3]
+            patient_study = split_file_name[-2]
+            if (patient_id, patient_study) not in dataset:
+                dataset[(patient_id, patient_study)] = []
+            dataset[(patient_id, patient_study)].append(img)
 
         except Exception as e:
             print(f"Error reading {dicom_file}: {e}")
@@ -90,23 +76,43 @@ def sum_intensity_projection(images):
     return np.sum(images, axis=0)
 
 def save_image(image, filename):
-    """Saves the processed image as a PNG file."""
-    plt.imshow(image, cmap='gray')
+    """Saves the processed image with correct contrast"""
+    plt.imshow(image, cmap='gray', vmin=0, vmax=255)
     plt.axis('off')
     plt.savefig(filename, bbox_inches='tight', pad_inches=0)
     plt.close()
 
+def normalize_image(image):
+    """Normalizes image to range [0, 255] and converts to uint8"""
+    image = image.astype(np.float32)
+    image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255
+    image = 255 - image  # Invert image  
+    return image.astype(np.uint8)
+
+def get_numpy_array(axial_slices: List[pydicom.dataset.FileDataset]) -> np.array:
+    """Converts a list of sorted DICOM slices into a 3D NumPy array.
+    
+    Args:
+        axial_slices (List[pydicom.dataset.FileDataset]): List of DICOM slices.
+        
+    Returns:
+        np.array: A 3D NumPy array of shape (height, width, num_slices).
+    """
+    arr = np.zeros((axial_slices[0].Rows, axial_slices[0].Columns, len(axial_slices)), dtype='int16')
+    for i, s in enumerate(axial_slices):
+        arr[..., i] = s.pixel_array
+    return arr
+
 def process_dicom_patients(dicom_datasets, output_dir="tomo_to_mammo_output"):
     """Processes DICOM datasets for each patient, computes intensity projections, and saves images."""
     os.makedirs(output_dir, exist_ok=True)
-    print(dicom_datasets.keys())
+
     for patient_name, patient_dcm in dicom_datasets.items():
         reference_shape = None
-        print(f"Processing {patient_name}")
         images_stack = []
         for img_dcm in patient_dcm:
             if hasattr(img_dcm, 'pixel_array'):
-                image = img_dcm.pixel_array
+                image = img_dcm.pixel_array.astype(np.float32)
                 
                 if reference_shape is None:
                     reference_shape = image.shape  # Set reference shape to the first image shape
@@ -114,22 +120,20 @@ def process_dicom_patients(dicom_datasets, output_dir="tomo_to_mammo_output"):
                 # Resize image if it doesn't match the reference shape
                 if image.shape != reference_shape:
                     image = resize(image, reference_shape, anti_aliasing=True, preserve_range=True)
-                    # image = image.astype(np.uint16)  # Convert back to uint16 if needed
-                    
-                    image = (image - np.min(image)) / (np.max(image) - np.min(image)) * 255  # Normalize
-                    image = 255 - image            
-                    image = image.astype(np.uint8)
                 
+                image = normalize_image(image)  # Normalize all images
+
                 images_stack.append(image)
             else:
                 print(f"Skipping: No pixel array found.")
+
         
         if images_stack:
             images_stack = np.array(images_stack)
             mip = max_intensity_projection(images_stack)
             aip = avg_intensity_projection(images_stack)
             sip = sum_intensity_projection(images_stack)
-            
+
             # Save images
             save_image(mip, os.path.join(output_dir, f"{patient_name}_MIP.png"))
             save_image(aip, os.path.join(output_dir, f"{patient_name}_AIP.png"))
@@ -169,7 +173,7 @@ def save_dicom_as_png(dicom_datasets: Dict[str, pydicom.dataset.FileDataset],out
 # Example usage
 root_folder = r"tomosynth\tomo_sm"
 dicom_datasets = read_dicom_files(root_folder)
-# process_dicom_patients(dicom_datasets, "tomo_to_mammo_output")
-save_dicom_as_png(dicom_datasets, "sample_pngs")
+process_dicom_patients(dicom_datasets, "tomo_to_mammo_output")
+# save_dicom_as_png(dicom_datasets, "sample_pngs")
 
 print(f"Found {len(dicom_datasets)} DICOM files.")
